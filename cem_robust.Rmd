@@ -1,0 +1,154 @@
+---
+title: "cem_robust"
+author: "Eehyun Kim"
+date: "2025-09-04"
+output: html_document
+---
+---
+title: "matching_openalex"
+author: "EK"
+date: "2025-08-19"
+output: html_document
+---
+
+# Coarsened Exact Matching
+
+
+```{r}
+library(rio)
+library(MatchIt)
+library(cem)
+library(stargazer)
+library(cobalt)
+library(ggplot2)
+
+
+setwd("")
+data = read.csv('author_variance.csv')
+
+# matching
+matching_list <- c("avg_authors", "counts", "main_field", "hindex", "first_pub_year_10", "career_length")
+
+
+summary(data$variance)
+
+avg_authors_cut <- quantile(data$avg_authors, seq(0.1, 1, by=0.1))
+counts_cut <- quantile(data$counts, seq(0.1, 1, by=0.1))
+hindex_cut <- quantile(data$hindex, seq(0.1, 1, by=0.1))
+career_length_cut <- quantile(data$career_length, seq(0.1, 1, by=0.1))
+
+# assign treatment variables 
+treat_var = 'gender_add'
+
+mdata = subset(data, select=c(treat_var, matching_list))
+mdata = subset(mdata, complete.cases(mdata))
+summary(mdata)
+
+# conduct the coarsened exact matching
+cem_ind = cem(treatment = treat_var,
+            data = mdata,
+            cutpoints = list(avg_authors = avg_authors_cut,
+            				 counts = counts_cut,
+            				 hindex = hindex_cut,
+            				 career_length = career_length_cut
+            				 ),
+            eval.imbalance = TRUE, 
+            keep.all = TRUE)
+
+
+b.out <- bal.tab(cem_ind, data = mdata)
+b.out
+
+# using plots
+
+love.plot(cem_ind, data = mdata)
+
+mdata["weight"] <- cem_ind$w
+#mdata["matched"] <- cem_ind$matched
+```
+
+```{r fig.width=6, fig.height=3}
+
+# FIGURE 3
+new.names <- c(avg_authors = "Average number of co-authors",
+               counts = "Total number of publications",
+               main_field = "Main field",
+               hindex = "H-index",
+               first_pub_year_10 = "First publication decade",
+			   career_length = "Career length (year between first/last pub)"
+			   #first_authorship = "First authorship rate"
+)
+
+l <- love.plot(cem_ind, data = mdata, size=4, colors=,
+		  var.names = new.names,
+		  shapes = c("circle filled", "circle")) + 
+	theme(text=element_text(size=10, family="Times New Roman"), axis.text=element_text(size=10))
+l$data$var
+
+imbalance(group=mdata$gender_add, data=subset(mdata, select=matching_list), drop=c('gender_add'))
+
+imbalance(group=mdata$gender_add, data=subset(mdata, select=matching_list), drop=c('gender_add'), weights=cem_ind$w)
+```
+
+```{r}
+
+data$weight = mdata$weight
+data$gender_add[data$gender_add == "female"] = "1_female"
+data$gender_add[data$gender_add == "male"] = "0_male"
+
+#summary(lm_sum)
+data$ff = 0
+data$ff[data$female >= median(data$female)] = 1
+data$gf = paste0(data$gender_add,"-", data$ff)
+
+data$gf <- factor(data$gf, levels = c("0_male-0", "1_female-0", "1_female-1", "0_male-1"))
+
+data$counts_log = log(data$counts)
+```
+
+```{r}
+lm_sum_n <- lm(data=data, "variance ~ factor(gender_add) + factor(first_pub_year_10) + avg_authors + counts_log + career_length + first_authorship + factor(main_field)", weights=weight)
+
+lm_sum <- lm(data=data, "variance ~ factor(gender_add) + female + factor(gender_add) * female + factor(first_pub_year_10) + avg_authors + counts_log + career_length + first_authorship + factor(main_field)", weights=weight)
+
+lm_sum_l <- lm(data=data[data$ff == 0,], "variance ~ factor(gender_add) + factor(first_pub_year_10) + avg_authors + counts_log + career_length + first_authorship + factor(main_field)", weights=weight)
+
+lm_sum_h <- lm(data=data[data$ff == 1,], "variance ~ factor(gender_add) + factor(first_pub_year_10) + avg_authors + counts_log + career_length + first_authorship + factor(main_field)", weights=weight)
+
+
+
+lm_sum_hin <- lm(data=data, "hindex ~ variance + factor(gf) + variance * factor(ff) + variance * factor(gf) + factor(first_pub_year_10) + avg_authors + career_length + first_authorship + counts_log + factor(main_field)", weights = weight)
+
+lm_sum_90 <- lm(data=data, "X0.9 ~ variance + factor(gf) + variance * factor(ff) + variance * factor(gf) + factor(first_pub_year_10) + avg_authors + career_length + first_authorship + counts_log + factor(main_field)", weights = weight)
+
+lm_sum_80 <- lm(data=data, "X0.8 ~ variance + factor(gf) + variance * factor(ff) + variance * factor(gf) + factor(first_pub_year_10) + avg_authors + career_length + first_authorship + counts_log + factor(main_field)", weights = weight)
+
+lm_sum_count <- lm(data=data, "counts_log ~ variance + factor(gf) + variance * factor(ff) + variance * factor(gf) + factor(first_pub_year_10) + avg_authors + career_length + first_authorship + hindex + X0.9 + factor(main_field)", weights = weight)
+
+```
+
+
+```{r, results='asis'}
+
+# TABLE 5 and TABLE 6
+stargazer(lm_sum_n, lm_sum, lm_sum_l, lm_sum_h,
+  type='text',
+  header=FALSE, keep = c(treat_var, "variance", "female"),
+  keep.stat=c('N', "rsq", 'adj.rsq'), digits=3,
+  model.names=FALSE, model.numbers = FALSE,
+  star.cutoffs = c(0.05, 0.01, 0.001), star.char=c('*', "**", "***"),
+    notes = c("* p<0.05 ** p<0.01 *** p<0.001"), notes.append = FALSE,
+  title = "title",
+  add.lines = list(c('Controls included',rep(c('Yes','Yes', 'Yes', "Yes"),1))))
+
+stargazer(lm_sum_hin, lm_sum_90, lm_sum_80, lm_sum_count, 
+  type='text',
+  header=FALSE,keep = c(treat_var, "variance", "gf", "ff"),
+  keep.stat=c('N', "rsq", 'adj.rsq'), digits=3,
+  model.names=FALSE, model.numbers = FALSE,
+  star.cutoffs = c(0.05, 0.01, 0.001), star.char=c('*', "**", "***"),
+    notes = c("* p<0.05 ** p<0.01 *** p<0.001"), notes.append = FALSE,
+  title = "title",
+  add.lines = list(c('Controls included',rep(c('Yes','Yes', 'Yes', "Yes"),1))))
+
+```
